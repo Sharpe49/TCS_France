@@ -21,6 +21,9 @@ using ORTS.Common;
 using ORTS.Scripting.Api;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
 
 namespace ORTS.Scripting.Script
 {
@@ -44,6 +47,15 @@ namespace ORTS.Scripting.Script
         const int BP_AM_V1 = 9;
         const int BP_AM_V2 = 10;
         const int BP_DM = 11;
+        const int VY_CV = 23;
+        const int VY_SECT = 24;
+        const int VY_SECT_AU = 25;
+        const int VY_BPT = 26;
+        const int TVM_VL = 27;
+        const int TVM_Ex1 = 28;
+        const int TVM_Ex2 = 29;
+        const int TVM_An1 = 30;
+        const int TVM_An2 = 31;
         const int LS_SF = 32;
         const int VY_SOS_RSO = 33;
         const int VY_SOS_VAC = 34;
@@ -51,6 +63,9 @@ namespace ORTS.Scripting.Script
         const int VY_SOS_KVB = 36;
         const int VY_VTE = 37;
         const int VY_FU = 38;
+        const int KVB_Principal1 = 41;
+        const int KVB_Principal2 = 42;
+        const int KVB_Auxiliary = 43;
         const int TVM_Mask = 47;
 
         enum ETCSLevel
@@ -96,6 +111,114 @@ namespace ORTS.Scripting.Script
         {
             V30,
             V10
+        }
+
+        enum KVBPrincipalDisplayStateType
+        {
+            Empty,
+            FU,
+            V000,
+            V00,
+            L,
+            b,
+            p,
+            Dashes3,
+            Dashes9,
+            Test
+        }
+
+        enum KVBAuxiliaryDisplayStateType
+        {
+            Empty,
+            V000,
+            V00,
+            L,
+            p,
+            Dashes3,
+            Test
+        }
+
+        enum QBalType
+        {
+            LC,
+            LGV,
+        }
+
+        public enum TVMModelType
+        {
+            None,
+            TVM300,
+            TVM430_V300,
+            TVM430_V320
+        }
+
+        public enum TVMSpeedType
+        {
+            _RRR,
+            _000,
+            _30E,
+            _30,
+            _60E,
+            _60,
+            _80E,
+            _80,
+            _100E,
+            _100,
+            _130E,
+            _130,
+            _160E,
+            _160,
+            _170E,
+            _170,
+            _200V,
+            _200,
+            _220E,
+            _220V,
+            _220,
+            _230E,
+            _230V,
+            _230,
+            _270V,
+            _270,
+            _300V,
+            _300,
+            _320V,
+            _320,
+            Any
+        }
+
+        public enum TVMAspectType
+        {
+            None,
+            _RRR,
+            _000,
+            _30E,
+            _30A,
+            _60E,
+            _60A,
+            _80E,
+            _80A,
+            _100E,
+            _100A,
+            _130E,
+            _130A,
+            _160E,
+            _160A,
+            _170E,
+            _170A,
+            _200V,
+            _200A,
+            _220E,
+            _220V,
+            _220A,
+            _230E,
+            _230V,
+            _230A,
+            _270V,
+            _270A,
+            _300V,
+            _300A,
+            _320V
         }
 
         ETCSLevel CurrentETCSLevel = ETCSLevel.L0;
@@ -164,15 +287,19 @@ namespace ORTS.Scripting.Script
         float KVBDelayBeforeBrakingEstablishedS;            // Tbo
 
         // Variables
+        bool KVBInit = true;
         bool KVBSpadEmergency = false;
         bool KVBOverspeedEmergency = false;
-        bool KVBKarmEmergency = false;
         KVBStateType KVBState = KVBStateType.Emergency;
         bool KVBEmergencyBraking = true;
         KVBPreAnnounceType KVBPreAnnounce = KVBPreAnnounceType.Deactivated;
         KVBModeType KVBMode = KVBModeType.ConventionalLine;
+        KVBPrincipalDisplayStateType KVBPrincipalDisplayState = KVBPrincipalDisplayStateType.Empty;
+        bool KVBPrincipalDisplayBlinking = false;
+        KVBAuxiliaryDisplayStateType KVBAuxiliaryDisplayState = KVBAuxiliaryDisplayStateType.Empty;
 
-        OdoMeter KVBHSLStartOdometer;
+        Blinker KVBPrincipalDisplayBlinker;
+        OdoMeter KVBInitOdometer;
 
         Aspect KVBLastSignalAspect = Aspect.Clear_1;
         float KVBLastSignalSpeedLimitMpS = float.PositiveInfinity;
@@ -195,16 +322,49 @@ namespace ORTS.Scripting.Script
         bool KVBSpeedTooHighLight = false;
         bool KVBEmergencyBrakeLight = false;
 
+        // TVM arming check
+        OdoMeter KarmStartOdometer;
+        bool KarmEmergencyBraking = false;
+        QBalType QBal = QBalType.LC;    // Q-BAL
+
     // TVM COVIT common
+        // Constants
+        const int TVMNumberOfBlockSections = 10;
+
         // Parameters
+        TVMModelType TVMModel = TVMModelType.None;
         bool TVMCOVITInhibited = false;
 
         // Variables
         bool TVMArmed = false;
         bool TVMCOVITEmergencyBraking = false;
+        bool TVMOpenCircuitBreaker = false;
+        bool TVMOpenCircuitBreakerAutomatic = false;
+        bool TVMLowerPantograph = false;
 
-        Aspect TVMAspect;
-        Aspect TVMPreviousAspect;
+        int[] SpeedSequence = new int[TVMNumberOfBlockSections];
+        Aspect[] AspectSequence = new Aspect[TVMNumberOfBlockSections];
+        int PreviousSectionSpeed = 0;
+        Aspect PreviousSectionAspect = Aspect.None;
+        TVMSpeedType PreviousVcond = TVMSpeedType.Any;
+
+        TVMSpeedType[] Vcond = new TVMSpeedType[TVMNumberOfBlockSections];
+        TVMSpeedType[] Ve = new TVMSpeedType[TVMNumberOfBlockSections];
+        TVMSpeedType[] Vc = new TVMSpeedType[TVMNumberOfBlockSections];
+        TVMSpeedType[] Va = new TVMSpeedType[TVMNumberOfBlockSections];
+
+        TVMAspectType TVMAspectCommand = TVMAspectType.None;
+        TVMAspectType TVMAspectCurrent = TVMAspectType.None;
+        TVMAspectType TVMAspectPreviousCycle = TVMAspectType.None;
+        bool TVMBlinkingCommand = false;
+        bool TVMBlinkingCurrent = false;
+        bool TVMBlinkingPreviousCycle = false;
+        Blinker TVMBlinker;
+
+        float TVMStartControlSpeedMpS = 0f;
+        float TVMEndControlSpeedMpS = 0f;
+        float TVMDecelerationMpS2 = 0f;
+
         bool TVMClosedSignal;
         bool TVMPreviousClosedSignal;
         bool TVMOpenedSignal;
@@ -212,97 +372,174 @@ namespace ORTS.Scripting.Script
 
     // TVM300 COVIT (Transmission Voie Machine 300 COntrôle de VITesse / Track Machine Transmission 300 Speed control)
         // Constants
-        Dictionary<Aspect, float> TVM300CurrentSpeedLimitsKph = new Dictionary<Aspect, float>
+        string TVM300DecodingFileName;
+        Dictionary<Tuple<TVMSpeedType, TVMSpeedType, TVMSpeedType>, Tuple<TVMAspectType, bool, float>> TVM300DecodingTable = new Dictionary<Tuple<TVMSpeedType, TVMSpeedType, TVMSpeedType>, Tuple<TVMAspectType, bool, float>>();
+
+        Dictionary<TVMAspectType, Aspect> TVM300MstsTranslation = new Dictionary<TVMAspectType, Aspect>
         {
-            {Aspect.None, 300f},
-            {Aspect.Clear_2, 300f},
-            {Aspect.Clear_1, 300f},
-            {Aspect.Approach_3, 270f},
-            {Aspect.Approach_2, 270f},
-            {Aspect.Approach_1, 220f},
-            {Aspect.Restricted, 220f},
-            {Aspect.StopAndProceed, 160f},
-            {Aspect.Stop, 160f},
-            {Aspect.Permission, 30f}
-        };
-        Dictionary<Aspect, float> TVM300NextSpeedLimitsKph = new Dictionary<Aspect, float>
-        {
-            {Aspect.None, 300f},
-            {Aspect.Clear_2, 300f},
-            {Aspect.Clear_1, 270f},
-            {Aspect.Approach_3, 270f},
-            {Aspect.Approach_2, 220f},
-            {Aspect.Approach_1, 220f},
-            {Aspect.Restricted, 160f},
-            {Aspect.StopAndProceed, 160f},
-            {Aspect.Stop, 30f},
-            {Aspect.Permission, 30f}
+            { TVMAspectType.None, Aspect.None  },
+            { TVMAspectType._300V, Aspect.Clear_2 },
+            { TVMAspectType._270A, Aspect.Clear_1  },
+            { TVMAspectType._270V, Aspect.Approach_3 },
+            { TVMAspectType._220A, Aspect.Approach_2 },
+            { TVMAspectType._220E, Aspect.Approach_1 },
+            { TVMAspectType._160A, Aspect.Restricted },
+            { TVMAspectType._160E, Aspect.StopAndProceed },
+            { TVMAspectType._80A, Aspect.Restricted },
+            { TVMAspectType._80E, Aspect.StopAndProceed },
+            { TVMAspectType._000, Aspect.Stop },
+            { TVMAspectType._RRR, Aspect.Permission }
         };
 
-        // Parameters
-        float TVM300TrainSpeedLimitMpS;
-
-        // Variables
-        float TVM300CurrentSpeedLimitMpS;
-        float TVM300NextSpeedLimitMpS;
-        float TVM300EmergencySpeedMpS;
+        Dictionary<TVMSpeedType, TVMSpeedType> TVM300Tab1 = new Dictionary<TVMSpeedType, TVMSpeedType>
+        {
+            { TVMSpeedType._RRR,   TVMSpeedType._000 },
+            { TVMSpeedType._000,  TVMSpeedType._160 },
+            { TVMSpeedType._80E,  TVMSpeedType._80 },
+            { TVMSpeedType._80,   TVMSpeedType._160 },
+            { TVMSpeedType._160E, TVMSpeedType._160 },
+            { TVMSpeedType._160,  TVMSpeedType._220 },
+            { TVMSpeedType._220E, TVMSpeedType._220 },
+            { TVMSpeedType._220,  TVMSpeedType._270 },
+            { TVMSpeedType._270V, TVMSpeedType._270 },
+            { TVMSpeedType._270,  TVMSpeedType._300 },
+            { TVMSpeedType._300V, TVMSpeedType._300 },
+            { TVMSpeedType._300,  TVMSpeedType._000 }
+        };
+        Dictionary<TVMSpeedType, TVMSpeedType> TVM300Tab2 = new Dictionary<TVMSpeedType, TVMSpeedType>
+        {
+            { TVMSpeedType._RRR,   TVMSpeedType._000 },
+            { TVMSpeedType._000,  TVMSpeedType._000 },
+            { TVMSpeedType._80E,  TVMSpeedType._80 },
+            { TVMSpeedType._80,   TVMSpeedType._80 },
+            { TVMSpeedType._160E, TVMSpeedType._160 },
+            { TVMSpeedType._160,  TVMSpeedType._160 },
+            { TVMSpeedType._220E, TVMSpeedType._220 },
+            { TVMSpeedType._220,  TVMSpeedType._220 },
+            { TVMSpeedType._270V, TVMSpeedType._270 },
+            { TVMSpeedType._270,  TVMSpeedType._270 },
+            { TVMSpeedType._300V, TVMSpeedType._300 },
+            { TVMSpeedType._300,  TVMSpeedType._000 }
+        };
 
     // TVM430 COVIT (Transmission Voie Machine 430 COntrôle de VITesse / Track Machine Transmission 430 Speed control)
         // Constants
         // TVM430 300 km/h
-        Dictionary<Aspect, float> TVM430S300CurrentSpeedLimitsKph = new Dictionary<Aspect, float>
+        string TVM430DecodingFileName;
+        Dictionary<Tuple<TVMSpeedType, TVMSpeedType, TVMSpeedType>, Tuple<TVMAspectType, bool, float, float, float>> TVM430DecodingTable = new Dictionary<Tuple<TVMSpeedType, TVMSpeedType, TVMSpeedType>, Tuple<TVMAspectType, bool, float, float, float>>();
+
+        Dictionary<TVMAspectType, Aspect> TVM430S300MstsTranslation = new Dictionary<TVMAspectType, Aspect>
         {
-            {Aspect.None, 300f},
-            {Aspect.Clear_2, 300f},
-            {Aspect.Clear_1, 300f},
-            {Aspect.Approach_3, 270f},
-            {Aspect.Approach_2, 230f},
-            {Aspect.Approach_1, 230f},
-            {Aspect.Restricted, 170f},
-            {Aspect.StopAndProceed, 170f},
-            {Aspect.Stop, 170f},
-            {Aspect.Permission, 30f}
+            { TVMAspectType.None, Aspect.None  },
+            { TVMAspectType._300V, Aspect.Clear_2 },
+            { TVMAspectType._270A, Aspect.Clear_1 },
+            { TVMAspectType._270V, Aspect.Clear_1  },
+            { TVMAspectType._230A, Aspect.Approach_3 },
+            { TVMAspectType._230V, Aspect.Approach_3 },
+            { TVMAspectType._230E, Aspect.Approach_3 },
+            { TVMAspectType._220A, Aspect.Approach_3 },
+            { TVMAspectType._220V, Aspect.Approach_3 },
+            { TVMAspectType._220E, Aspect.Approach_3 },
+            { TVMAspectType._200A, Aspect.Approach_2 },
+            { TVMAspectType._200V, Aspect.Approach_2 },
+            { TVMAspectType._170A, Aspect.Approach_2 },
+            { TVMAspectType._170E, Aspect.Approach_2 },
+            { TVMAspectType._160A, Aspect.Approach_1 },
+            { TVMAspectType._160E, Aspect.Approach_1 },
+            { TVMAspectType._130A, Aspect.Restricted },
+            { TVMAspectType._130E, Aspect.Restricted },
+            { TVMAspectType._80A, Aspect.Restricted },
+            { TVMAspectType._80E, Aspect.Restricted },
+            { TVMAspectType._60A, Aspect.Restricted },
+            { TVMAspectType._60E, Aspect.Restricted },
+            { TVMAspectType._000, Aspect.Stop },
+            { TVMAspectType._RRR, Aspect.Permission }
         };
-        Dictionary<Aspect, float> TVM430S300NextSpeedLimitsKph = new Dictionary<Aspect, float>
+        Dictionary<TVMAspectType, Aspect> TVM430S320MstsTranslation = new Dictionary<TVMAspectType, Aspect>
         {
-            {Aspect.None, 300f},
-            {Aspect.Clear_2, 300f},
-            {Aspect.Clear_1, 270f},
-            {Aspect.Approach_3, 230f},
-            {Aspect.Approach_2, 170f},
-            {Aspect.Approach_1, 160f},
-            {Aspect.Restricted, 80f},
-            {Aspect.StopAndProceed, 30f},
-            {Aspect.Stop, 0f},
-            {Aspect.Permission, 30f}
+            { TVMAspectType.None, Aspect.None  },
+            { TVMAspectType._320V, Aspect.Clear_2 },
+            { TVMAspectType._300A, Aspect.Clear_1  },
+            { TVMAspectType._300V, Aspect.Clear_1  },
+            { TVMAspectType._270A, Aspect.Approach_3 },
+            { TVMAspectType._270V, Aspect.Approach_3 },
+            { TVMAspectType._230A, Aspect.Approach_2 },
+            { TVMAspectType._230E, Aspect.Approach_2 },
+            { TVMAspectType._220A, Aspect.Approach_2 },
+            { TVMAspectType._220E, Aspect.Approach_2 },
+            { TVMAspectType._200A, Aspect.Approach_1 },
+            { TVMAspectType._200V, Aspect.Approach_1 },
+            { TVMAspectType._170A, Aspect.Approach_1 },
+            { TVMAspectType._170E, Aspect.Approach_1 },
+            { TVMAspectType._160A, Aspect.Approach_1 },
+            { TVMAspectType._160E, Aspect.Approach_1 },
+            { TVMAspectType._130A, Aspect.Restricted },
+            { TVMAspectType._130E, Aspect.Restricted },
+            { TVMAspectType._80A, Aspect.Restricted },
+            { TVMAspectType._80E, Aspect.Restricted },
+            { TVMAspectType._60A, Aspect.Restricted },
+            { TVMAspectType._60E, Aspect.Restricted },
+            { TVMAspectType._000, Aspect.Stop },
+            { TVMAspectType._RRR, Aspect.Permission }
         };
 
-        // TVM430 320 km/h
-        Dictionary<Aspect, float> TVM430S320CurrentSpeedLimitsKph = new Dictionary<Aspect, float>
+        Dictionary<TVMSpeedType, TVMSpeedType> TVM430SncfTab1 = new Dictionary<TVMSpeedType, TVMSpeedType>
         {
-            {Aspect.None, 320f},
-            {Aspect.Clear_2, 320f},
-            {Aspect.Clear_1, 320f},
-            {Aspect.Approach_3, 300f},
-            {Aspect.Approach_2, 270f},
-            {Aspect.Approach_1, 230f},
-            {Aspect.Restricted, 170f},
-            {Aspect.StopAndProceed, 170f},
-            {Aspect.Stop, 170f},
-            {Aspect.Permission, 30f}
+            { TVMSpeedType._RRR,   TVMSpeedType._000 },
+            { TVMSpeedType._000,  TVMSpeedType._170 },
+            { TVMSpeedType._60E,  TVMSpeedType._60 },
+            { TVMSpeedType._60,   TVMSpeedType._170 },
+            { TVMSpeedType._80E,  TVMSpeedType._80 },
+            { TVMSpeedType._80,   TVMSpeedType._170 },
+            { TVMSpeedType._130E, TVMSpeedType._130 },
+            { TVMSpeedType._130,  TVMSpeedType._200 },
+            { TVMSpeedType._160E, TVMSpeedType._160 },
+            { TVMSpeedType._160,  TVMSpeedType._230 },
+            { TVMSpeedType._170E, TVMSpeedType._170 },
+            { TVMSpeedType._170,  TVMSpeedType._230 },
+            { TVMSpeedType._200V, TVMSpeedType._200 },
+            { TVMSpeedType._200,  TVMSpeedType._230 },
+            { TVMSpeedType._220E, TVMSpeedType._220 },
+            { TVMSpeedType._220V, TVMSpeedType._220 },
+            { TVMSpeedType._220,  TVMSpeedType._270 },
+            { TVMSpeedType._230E, TVMSpeedType._230 },
+            { TVMSpeedType._230V, TVMSpeedType._230 },
+            { TVMSpeedType._230,  TVMSpeedType._270 },
+            { TVMSpeedType._270V, TVMSpeedType._270 },
+            { TVMSpeedType._270,  TVMSpeedType._300 },
+            { TVMSpeedType._300V, TVMSpeedType._300 },
+            { TVMSpeedType._300,  TVMSpeedType._320 },
+            { TVMSpeedType._320V, TVMSpeedType._320 },
+            { TVMSpeedType._320,  TVMSpeedType._000 }
         };
-        Dictionary<Aspect, float> TVM430S320NextSpeedLimitsKph = new Dictionary<Aspect, float>
+        Dictionary<TVMSpeedType, TVMSpeedType> TVM430SncfTab2 = new Dictionary<TVMSpeedType, TVMSpeedType>
         {
-            {Aspect.None, 320f},
-            {Aspect.Clear_2, 320f},
-            {Aspect.Clear_1, 300f},
-            {Aspect.Approach_3, 270f},
-            {Aspect.Approach_2, 230f},
-            {Aspect.Approach_1, 170f},
-            {Aspect.Restricted, 80f},
-            {Aspect.StopAndProceed, 30f},
-            {Aspect.Stop, 0f},
-            {Aspect.Permission, 30f}
+            { TVMSpeedType._RRR,   TVMSpeedType._000 },
+            { TVMSpeedType._000,  TVMSpeedType._000 },
+            { TVMSpeedType._60E,  TVMSpeedType._60 },
+            { TVMSpeedType._60,   TVMSpeedType._60 },
+            { TVMSpeedType._80E,  TVMSpeedType._80 },
+            { TVMSpeedType._80,   TVMSpeedType._80 },
+            { TVMSpeedType._130E, TVMSpeedType._130 },
+            { TVMSpeedType._130,  TVMSpeedType._130 },
+            { TVMSpeedType._160E, TVMSpeedType._160 },
+            { TVMSpeedType._160,  TVMSpeedType._160 },
+            { TVMSpeedType._170E, TVMSpeedType._170 },
+            { TVMSpeedType._170,  TVMSpeedType._170 },
+            { TVMSpeedType._200V, TVMSpeedType._200 },
+            { TVMSpeedType._200,  TVMSpeedType._200 },
+            { TVMSpeedType._220E, TVMSpeedType._220 },
+            { TVMSpeedType._220V, TVMSpeedType._220 },
+            { TVMSpeedType._220,  TVMSpeedType._220 },
+            { TVMSpeedType._230E, TVMSpeedType._230 },
+            { TVMSpeedType._230V, TVMSpeedType._230 },
+            { TVMSpeedType._230,  TVMSpeedType._230 },
+            { TVMSpeedType._270V, TVMSpeedType._270 },
+            { TVMSpeedType._270,  TVMSpeedType._270 },
+            { TVMSpeedType._300V, TVMSpeedType._300 },
+            { TVMSpeedType._300,  TVMSpeedType._300 },
+            { TVMSpeedType._320V, TVMSpeedType._320 },
+            { TVMSpeedType._320,  TVMSpeedType._000 }
         };
 
         // Parameters
@@ -310,14 +547,6 @@ namespace ORTS.Scripting.Script
 
         // Variables
         Timer TVM430AspectChangeTimer;
-        float TVM430CurrentSpeedLimitMpS;
-        float TVM430CurrentEmergencySpeedMpS;
-        float TVM430NextSpeedLimitMpS;
-        float TVM430NextEmergencySpeedMpS;
-        float TVM430EmergencyDecelerationMpS2;
-        float TVM430ResetDecelerationMpS2;
-        float TVM430EmergencySpeedCurveMpS;
-        float TVM430ResetSpeedCurveMpS;
 
     // Vigilance monitoring (VACMA)
         // Parameters
@@ -374,17 +603,113 @@ namespace ORTS.Scripting.Script
             KVBInhibited = GetBoolParameter("KVB", "Inhibited", false);
             KVBTrainSpeedLimitMpS = MpS.FromKpH(GetFloatParameter("KVB", "TrainSpeedLimitKpH", 160f));
 
-            KVBHSLStartOdometer = new OdoMeter(this);
-            KVBHSLStartOdometer.Setup(450f);
+            KVBPrincipalDisplayBlinker = new Blinker(this);
+            KVBPrincipalDisplayBlinker.Setup(2f);
+
+            KVBInitOdometer = new OdoMeter(this);
+            KVBInitOdometer.Setup(4400f);
+
+            KarmStartOdometer = new OdoMeter(this);
+            KarmStartOdometer.Setup(450f);
 
             // TVM common section
             TVMCOVITInhibited = GetBoolParameter("TVM", "CovitInhibited", false);
+            TVMBlinker = new Blinker(this);
+            TVMBlinker.Setup(1f);
 
             // TVM300 section
-            TVM300TrainSpeedLimitMpS = MpS.FromKpH(GetFloatParameter("TVM300", "TrainSpeedLimitKpH", 300f));
+            TVM300DecodingFileName = GetStringParameter("TVM300", "DecodingFileName", "..\\..\\common.script\\TGVR_TVM300.csv");
+
+            {
+                string path = Path.Combine(Path.GetDirectoryName(Locomotive().WagFilePath), "Script", TVM300DecodingFileName);
+
+                if (File.Exists(path))
+                {
+                    using (StreamReader reader = new StreamReader(path))
+                    {
+                        string line;
+                        while ((line = reader.ReadLine()) != null)
+                        {
+                            string[] parts = line.Split(';');
+                            
+                            Tuple<TVMSpeedType, TVMSpeedType, TVMSpeedType> triplet = new Tuple<TVMSpeedType, TVMSpeedType, TVMSpeedType>
+                                (
+                                    (TVMSpeedType)Enum.Parse(typeof(TVMSpeedType), "_" + parts[0]),
+                                    (TVMSpeedType)Enum.Parse(typeof(TVMSpeedType), "_" + parts[1]),
+                                    (TVMSpeedType)Enum.Parse(typeof(TVMSpeedType), (parts[2] == "---" ? "Any" : "_" + parts[2]))
+                                );
+                            Tuple<TVMAspectType, bool, float> onBoardValues = new Tuple<TVMAspectType, bool, float>
+                                (
+                                    (TVMAspectType)Enum.Parse(typeof(TVMAspectType), "_" + parts[3]),
+                                    bool.Parse(parts[4]),
+                                    float.Parse(parts[5], CultureInfo.InvariantCulture)
+                                );
+                            TVM300DecodingTable.Add(triplet, onBoardValues);
+                        }
+                    }
+                }
+                else
+                {
+                    throw new FileNotFoundException(string.Format("File {0} has not been found", path));
+                }
+            }
+
 
             // TVM430 section
             TVM430TrainSpeedLimitMpS = MpS.FromKpH(GetFloatParameter("TVM430", "TrainSpeedLimitKpH", 320f));
+            TVM430DecodingFileName = GetStringParameter("TVM430", "DecodingFileName", "..\\..\\common.script\\TGVR_TVM430.csv");
+
+            {
+                string path = Path.Combine(Path.GetDirectoryName(Locomotive().WagFilePath), "Script", TVM430DecodingFileName);
+
+                if (File.Exists(path))
+                {
+                    using (StreamReader reader = new StreamReader(path))
+                    {
+                        string line;
+                        while ((line = reader.ReadLine()) != null)
+                        {
+                            string[] parts = line.Split(';');
+
+                            Tuple<TVMSpeedType, TVMSpeedType, TVMSpeedType> triplet = new Tuple<TVMSpeedType, TVMSpeedType, TVMSpeedType>
+                                (
+                                    (TVMSpeedType)Enum.Parse(typeof(TVMSpeedType), "_" + parts[0]),
+                                    (TVMSpeedType)Enum.Parse(typeof(TVMSpeedType), "_" + parts[1]),
+                                    (TVMSpeedType)Enum.Parse(typeof(TVMSpeedType), (parts[2] == "---" ? "Any" : "_" + parts[2]))
+                                );
+                            Tuple<TVMAspectType, bool, float, float, float> onBoardValues = new Tuple<TVMAspectType, bool, float, float, float>
+                                (
+                                    (TVMAspectType)Enum.Parse(typeof(TVMAspectType), "_" + parts[3]),
+                                    bool.Parse(parts[4]),
+                                    float.Parse(parts[5], CultureInfo.InvariantCulture),
+                                    float.Parse(parts[6], CultureInfo.InvariantCulture),
+                                    float.Parse(parts[7], CultureInfo.InvariantCulture)
+                                );
+                            TVM430DecodingTable.Add(triplet, onBoardValues);
+                        }
+                    }
+                }
+                else
+                {
+                    throw new FileNotFoundException(string.Format("File {0} has not been found", path));
+                }
+            }
+
+            if (TVM300Present)
+            {
+                TVMModel = TVMModelType.TVM300;
+            }
+            else if (TVM430Present)
+            {
+                if (TVM430TrainSpeedLimitMpS == MpS.FromKpH(300f))
+                {
+                    TVMModel = TVMModelType.TVM430_V300;
+                }
+                else
+                {
+                    TVMModel = TVMModelType.TVM430_V320;
+                }
+            }
 
             // VACMA section
             VACMAActivationSpeedMpS = MpS.FromKpH(GetFloatParameter("VACMA", "ActivationSpeedKpH", 3f));
@@ -419,6 +744,15 @@ namespace ORTS.Scripting.Script
             SetCustomizedCabviewControlName(BP_AM_V1, "BP AM V1 : Armement manuel TVM voie 1 / TVM manual arming track 1");
             SetCustomizedCabviewControlName(BP_AM_V2, "BP AM V2 : Armement manuel TVM voie 2 / TVM manual arming track 2");
             SetCustomizedCabviewControlName(BP_DM, "BP DM : Désarmement manuel TVM / TVM manual dearming");
+            SetCustomizedCabviewControlName(VY_CV, "VY CV : COVIT (freinage d'urgence TVM) / TVM emergency braking");
+            SetCustomizedCabviewControlName(VY_SECT, "VY SECT : Sectionnement / Open circuit breaker");
+            SetCustomizedCabviewControlName(VY_SECT_AU, "VY SECT AU : Sectionnement automatique / Automatic circuit breaker opening");
+            SetCustomizedCabviewControlName(VY_BPT, "VY BPT : Baissez Panto / Lower pantograph");
+            SetCustomizedCabviewControlName(TVM_VL, "Visualisateur TVM / TVM display");
+            SetCustomizedCabviewControlName(TVM_An1, "Visualisateur TVM / TVM display");
+            SetCustomizedCabviewControlName(TVM_An2, "Visualisateur TVM / TVM display");
+            SetCustomizedCabviewControlName(TVM_Ex1, "Visualisateur TVM / TVM display");
+            SetCustomizedCabviewControlName(TVM_Ex2, "Visualisateur TVM / TVM display");
             SetCustomizedCabviewControlName(LS_SF, "LS (SF) : Signal Fermé / Closed Signal");
             SetCustomizedCabviewControlName(VY_SOS_RSO, "VY SOS RSO : FU RSO / RSO EB");
             SetCustomizedCabviewControlName(VY_SOS_VAC, "VY SOS VAC : FU VACMA / Alerter EB");
@@ -426,6 +760,9 @@ namespace ORTS.Scripting.Script
             SetCustomizedCabviewControlName(VY_SOS_KVB, "VY SOS KVB : FU KVB / KVB EB");
             SetCustomizedCabviewControlName(VY_VTE, "VY VTE : Vitesse Trop Elevée / Speed too high");
             SetCustomizedCabviewControlName(VY_FU, "VY FU : FU KVB / KVB EB");
+            SetCustomizedCabviewControlName(KVB_Principal1, "Visualisateur principal KVB");
+            SetCustomizedCabviewControlName(KVB_Principal2, "Visualisateur principal KVB");
+            SetCustomizedCabviewControlName(KVB_Auxiliary, "Visualisateur auxiliaire KVB");
             SetCustomizedCabviewControlName(TVM_Mask, "Masque TVM / TVM mask");
 
             Activated = true;
@@ -437,6 +774,7 @@ namespace ORTS.Scripting.Script
         {
             RSOState = RSOStateType.Off;
             RSOEmergencyBraking = false;
+            KVBInit = false;
             KVBState = KVBStateType.Normal;
             KVBEmergencyBraking = false;
             VACMAEmergencyBraking = false;
@@ -445,7 +783,6 @@ namespace ORTS.Scripting.Script
             {
                 KVBMode = KVBModeType.HighSpeedLine;
                 TVMArmed = true;
-                UpdateTVMAspect(NextSignalAspect(0), false);
             }
         }
 
@@ -460,6 +797,7 @@ namespace ORTS.Scripting.Script
                     if (InitCount == 5 && CurrentPostSpeedLimitMpS() > MpS.FromKpH(221f))
                     {
                         KVBMode = KVBModeType.HighSpeedLine;
+                        QBal = QBalType.LGV;
                     }
 
                     return;
@@ -474,6 +812,7 @@ namespace ORTS.Scripting.Script
 
                 if (RSOEmergencyBraking
                     || KVBEmergencyBraking
+                    || KarmEmergencyBraking
                     || TVMCOVITEmergencyBraking
                     || VACMAEmergencyBraking
                     || ExternalEmergencyBraking)
@@ -668,23 +1007,42 @@ namespace ORTS.Scripting.Script
             {
                 if (CurrentPostSpeedLimitMpS() > MpS.FromKpH(221f) && PreviousLineSpeed <= MpS.FromKpH(221f) && SpeedMpS() > 0f)
                 {
-                    KVBHSLStartOdometer.Start();
-                }
+                    KarmStartOdometer.Start();
 
-                if (KVBHSLStartOdometer.Triggered && KVBMode != KVBModeType.HighSpeedLine)
-                {
-                    KVBHSLStartOdometer.Stop();
                     KVBSpadEmergency = false;
                     KVBOverspeedEmergency = false;
                     KVBSpeedTooHighLight = false;
-
                     KVBMode = KVBModeType.HighSpeedLine;
+                }
+                else if (NextPostSpeedLimitMpS(0) <= MpS.FromKpH(221f) && NextPostDistanceM(0) < 5f && PreviousLineSpeed > MpS.FromKpH(221f) && SpeedMpS() > 0f)
+                {
+                    KVBMode = KVBModeType.ConventionalLine;
+                }
+
+                if (KarmStartOdometer.Triggered)
+                {
+                    KarmStartOdometer.Stop();
+                    QBal = QBalType.LGV;
                 }
                 else if (NextPostSpeedLimitMpS(0) <= MpS.FromKpH(221f) && NextPostDistanceM(0) < 60f && PreviousLineSpeed > MpS.FromKpH(221f) && SpeedMpS() > 0f)
                 {
-                    KVBKarmEmergency = false;
+                    QBal = QBalType.LC;
+                }
 
-                    KVBMode = KVBModeType.ConventionalLine;
+                if (QBal == QBalType.LGV && (TVM300Present || TVM430Present))
+                {
+                    if (!KVBInhibited && !TVMArmed)
+                    {
+                        KarmEmergencyBraking = true;
+                    }
+                    else if (RearmingButton)
+                    {
+                        KarmEmergencyBraking = false;
+                    }
+                }
+                else
+                {
+                    KarmEmergencyBraking = false;
                 }
 
                 switch (KVBMode)
@@ -692,7 +1050,7 @@ namespace ORTS.Scripting.Script
                     case KVBModeType.HighSpeedLine:
                         ResetKVBTargets();
 
-                        KVBKarmEmergency = (!TVM300Present && !TVM430Present) || !TVMArmed;
+                        UpdateKVBInit();
 
                         UpdateKVBEmergencyBraking();
 
@@ -703,6 +1061,8 @@ namespace ORTS.Scripting.Script
                         KVBMode = KVBModeType.ConventionalLine;
 
                         UpdateKVBParameters();
+
+                        UpdateKVBInit();
 
                         UpdateKVBTargets();
 
@@ -744,6 +1104,22 @@ namespace ORTS.Scripting.Script
                 KVBDelayBeforeBrakingEstablishedS = 12f + KVBTrainLengthM / 200f;
             else
                 KVBDelayBeforeBrakingEstablishedS = 2f + 2f * KVBTrainLengthM * KVBTrainLengthM * 0.00001f;
+        }
+
+        protected void UpdateKVBInit()
+        {
+            if (KVBInit)
+            {
+                if (!KVBInitOdometer.Started)
+                {
+                    KVBInitOdometer.Start();
+                }
+
+                if (KVBInitOdometer.Triggered)
+                {
+                    KVBInit = false;
+                }
+            }
         }
 
         protected void UpdateKVBTargets()
@@ -880,7 +1256,8 @@ namespace ORTS.Scripting.Script
             switch (KVBPreAnnounce)
             {
                 case KVBPreAnnounceType.Deactivated:
-                    if (KVBLastSignalSpeedLimitMpS > MpS.FromKpH(160f)
+                    if (!KVBInit
+                        && KVBLastSignalSpeedLimitMpS > MpS.FromKpH(160f)
                         && (KVBSpeedRestrictionTargetSignalNumber != 0 || KVBSpeedRestrictionTargetSpeedMpS > MpS.FromKpH(160f))
                         && KVBCurrentLineSpeedLimitMpS > MpS.FromKpH(160f)
                         && (KVBNextLineSpeedLimitMpS > MpS.FromKpH(160f) || KVBNextLineSpeedDistanceM > 3000f))
@@ -1088,27 +1465,24 @@ namespace ORTS.Scripting.Script
                 KVBOverspeedEmergency = false;
             }
 
-            if (KVBKarmEmergency && TVMArmed)
-            {
-                KVBKarmEmergency = false;
-            }
 
             if (!KVBEmergencyBraking)
             {
-                if (KVBSpadEmergency || KVBOverspeedEmergency || KVBKarmEmergency)
+                if (KVBSpadEmergency || KVBOverspeedEmergency)
                 {
                     KVBEmergencyBraking = true;
                 }
             }
             else
             {
-                if (!KVBSpadEmergency && !KVBOverspeedEmergency && !KVBKarmEmergency && RearmingButton)
+                if (!KVBSpadEmergency && !KVBOverspeedEmergency && RearmingButton)
                 {
                     KVBEmergencyBraking = false;
 
                     // On sight till the end of the block section
                     KVBOnSight = true;
                     KVBLastSignalSpeedLimitMpS = MpS.FromKpH(30);
+                    KVBStopTargetReleaseSpeed = KVBReleaseSpeed.V30;
                 }
             }
         }
@@ -1117,6 +1491,7 @@ namespace ORTS.Scripting.Script
         {
             SetOverspeedWarningDisplay(KVBState >= KVBStateType.Alert);
 
+            // Legacy display
             if (KVBMode != KVBModeType.HighSpeedLine)
             {
                 if (KVBPreAnnounce == KVBPreAnnounceType.Armed)
@@ -1133,6 +1508,224 @@ namespace ORTS.Scripting.Script
                 }
             }
 
+            // New display
+            if (KVBMode == KVBModeType.HighSpeedLine)
+            {
+                SetCabDisplayControl(KVB_Principal1, 0);
+                SetCabDisplayControl(KVB_Principal2, 0);
+                SetCabDisplayControl(KVB_Auxiliary, 0);
+            }
+            else
+            {
+                if (KVBEmergencyBrakeLight)
+                {
+                    KVBPrincipalDisplayState = KVBPrincipalDisplayStateType.FU;
+                    KVBPrincipalDisplayBlinking = false;
+                    KVBAuxiliaryDisplayState = KVBAuxiliaryDisplayStateType.Empty;
+                }
+                else if (KVBInit)
+                {
+                    KVBPrincipalDisplayState = KVBPrincipalDisplayStateType.Empty;
+                    KVBPrincipalDisplayBlinking = false;
+                    KVBAuxiliaryDisplayState = KVBAuxiliaryDisplayStateType.Empty;
+                }
+                else if (KVBPreAnnounce == KVBPreAnnounceType.Armed)
+                {
+                    KVBPrincipalDisplayState = KVBPrincipalDisplayStateType.b;
+                    KVBPrincipalDisplayBlinking = false;
+                    KVBAuxiliaryDisplayState = KVBAuxiliaryDisplayStateType.Empty;
+                }
+                else if (KVBPreAnnounce == KVBPreAnnounceType.Triggered)
+                {
+                    KVBPrincipalDisplayState = KVBPrincipalDisplayStateType.Empty;
+                    KVBPrincipalDisplayBlinking = false;
+                    KVBAuxiliaryDisplayState = KVBAuxiliaryDisplayStateType.p;
+                }
+                else if (KVBOnSight)
+                {
+                    KVBPrincipalDisplayState = KVBPrincipalDisplayStateType.V00;
+                    KVBPrincipalDisplayBlinking = KVBState == KVBStateType.Alert;
+                    KVBAuxiliaryDisplayState = KVBAuxiliaryDisplayStateType.V00;
+                }
+                else if (KVBStopTargetSignalNumber == 0)
+                {
+                    if (KVBStopTargetReleaseSpeed == KVBReleaseSpeed.V10)
+                    {
+                        KVBPrincipalDisplayState = KVBPrincipalDisplayStateType.Empty;
+                        KVBPrincipalDisplayBlinking = false;
+                        KVBAuxiliaryDisplayState = KVBAuxiliaryDisplayStateType.V000;
+                    }
+                    else
+                    {
+                        if (KVBState == KVBStateType.Alert)
+                        {
+                            KVBPrincipalDisplayState = KVBPrincipalDisplayStateType.V00;
+                            KVBPrincipalDisplayBlinking = true;
+                        }
+                        else
+                        {
+                            KVBPrincipalDisplayState = KVBPrincipalDisplayStateType.Empty;
+                            KVBPrincipalDisplayBlinking = false;
+                        }
+                        KVBAuxiliaryDisplayState = KVBAuxiliaryDisplayStateType.V00;
+                    }
+                }
+                else
+                {
+                    KVBPrincipalDisplayState = KVBPrincipalDisplayStateType.Dashes3;
+                    KVBPrincipalDisplayBlinking = false;
+                    KVBAuxiliaryDisplayState = KVBAuxiliaryDisplayStateType.Dashes3;
+                }
+
+                if (KVBPrincipalDisplayBlinking)
+                {
+                    if (!KVBPrincipalDisplayBlinker.Started)
+                    {
+                        KVBPrincipalDisplayBlinker.Start();
+                    }
+                }
+                else
+                {
+                    if (KVBPrincipalDisplayBlinker.Started)
+                    {
+                        KVBPrincipalDisplayBlinker.Stop();
+                    }
+                }
+
+                switch (KVBPrincipalDisplayState)
+                {
+                    case KVBPrincipalDisplayStateType.Empty:
+                        SetCabDisplayControl(KVB_Principal1, 0);
+                        SetCabDisplayControl(KVB_Principal2, 0);
+                        break;
+
+                    case KVBPrincipalDisplayStateType.FU:
+                        SetCabDisplayControl(KVB_Principal1, 0);
+                        SetCabDisplayControl(KVB_Principal2, 1);
+                        break;
+
+                    case KVBPrincipalDisplayStateType.V000:
+                        if (KVBPrincipalDisplayBlinking)
+                        {
+                            SetCabDisplayControl(KVB_Principal1, KVBPrincipalDisplayBlinker.On ? 1 : 0);
+                            SetCabDisplayControl(KVB_Principal2, 0);
+                        }
+                        else
+                        {
+                            SetCabDisplayControl(KVB_Principal1, 1);
+                            SetCabDisplayControl(KVB_Principal2, 0);
+                        }
+                        break;
+
+                    case KVBPrincipalDisplayStateType.V00:
+                        if (KVBPrincipalDisplayBlinking)
+                        {
+                            SetCabDisplayControl(KVB_Principal1, KVBPrincipalDisplayBlinker.On ? 2 : 0);
+                            SetCabDisplayControl(KVB_Principal2, 0);
+                        }
+                        else
+                        {
+                            SetCabDisplayControl(KVB_Principal1, 2);
+                            SetCabDisplayControl(KVB_Principal2, 0);
+                        }
+                        break;
+
+                    case KVBPrincipalDisplayStateType.L:
+                        if (KVBPrincipalDisplayBlinking)
+                        {
+                            SetCabDisplayControl(KVB_Principal1, 0);
+                            SetCabDisplayControl(KVB_Principal2, KVBPrincipalDisplayBlinker.On ? 4 : 0);
+                        }
+                        else
+                        {
+                            SetCabDisplayControl(KVB_Principal1, 0);
+                            SetCabDisplayControl(KVB_Principal2, 4);
+                        }
+                        break;
+
+                    case KVBPrincipalDisplayStateType.b:
+                        if (KVBPrincipalDisplayBlinking)
+                        {
+                            SetCabDisplayControl(KVB_Principal1, KVBPrincipalDisplayBlinker.On ? 4 : 0);
+                            SetCabDisplayControl(KVB_Principal2, 0);
+                        }
+                        else
+                        {
+                            SetCabDisplayControl(KVB_Principal1, 4);
+                            SetCabDisplayControl(KVB_Principal2, 0);
+                        }
+                        break;
+
+                    case KVBPrincipalDisplayStateType.p:
+                        if (KVBPrincipalDisplayBlinking)
+                        {
+                            SetCabDisplayControl(KVB_Principal1, KVBPrincipalDisplayBlinker.On ? 5 : 0);
+                            SetCabDisplayControl(KVB_Principal2, 0);
+                        }
+                        else
+                        {
+                            SetCabDisplayControl(KVB_Principal1, 5);
+                            SetCabDisplayControl(KVB_Principal2, 0);
+                        }
+                        break;
+
+                    case KVBPrincipalDisplayStateType.Dashes3:
+                        if (KVBPrincipalDisplayBlinking)
+                        {
+                            SetCabDisplayControl(KVB_Principal1, KVBPrincipalDisplayBlinker.On ? 6 : 0);
+                            SetCabDisplayControl(KVB_Principal2, 0);
+                        }
+                        else
+                        {
+                            SetCabDisplayControl(KVB_Principal1, 6);
+                            SetCabDisplayControl(KVB_Principal2, 0);
+                        }
+                        break;
+
+                    case KVBPrincipalDisplayStateType.Dashes9:
+                        SetCabDisplayControl(KVB_Principal1, 7);
+                        SetCabDisplayControl(KVB_Principal2, 0);
+                        break;
+
+                    case KVBPrincipalDisplayStateType.Test:
+                        SetCabDisplayControl(KVB_Principal1, 0);
+                        SetCabDisplayControl(KVB_Principal2, 7);
+                        break;
+                }
+
+
+                switch (KVBAuxiliaryDisplayState)
+                {
+                    case KVBAuxiliaryDisplayStateType.Empty:
+                        SetCabDisplayControl(KVB_Auxiliary, 0);
+                        break;
+
+                    case KVBAuxiliaryDisplayStateType.V000:
+                        SetCabDisplayControl(KVB_Auxiliary, 1);
+                        break;
+
+                    case KVBAuxiliaryDisplayStateType.V00:
+                        SetCabDisplayControl(KVB_Auxiliary, 2);
+                        break;
+
+                    case KVBAuxiliaryDisplayStateType.L:
+                        SetCabDisplayControl(KVB_Auxiliary, 4);
+                        break;
+
+                    case KVBAuxiliaryDisplayStateType.p:
+                        SetCabDisplayControl(KVB_Auxiliary, 5);
+                        break;
+
+                    case KVBAuxiliaryDisplayStateType.Dashes3:
+                        SetCabDisplayControl(KVB_Auxiliary, 6);
+                        break;
+
+                    case KVBAuxiliaryDisplayStateType.Test:
+                        SetCabDisplayControl(KVB_Auxiliary, 7);
+                        break;
+                }
+            }
+
             // VY SOS KVB
             SetCabDisplayControl(VY_SOS_KVB, KVBEmergencyBraking ? 1 : 0);
 
@@ -1140,7 +1733,7 @@ namespace ORTS.Scripting.Script
             SetCabDisplayControl(VY_VTE, KVBSpeedTooHighLight ? 1 : 0);
 
             // VY FU
-            KVBEmergencyBrakeLight = KVBSpadEmergency || KVBOverspeedEmergency || KVBKarmEmergency;
+            KVBEmergencyBrakeLight = KVBSpadEmergency || KVBOverspeedEmergency;
             SetCabDisplayControl(VY_FU, KVBEmergencyBrakeLight ? 1 : 0);
         }
 
@@ -1192,7 +1785,8 @@ namespace ORTS.Scripting.Script
                 if (NextPostSpeedLimitMpS(0) > MpS.FromKpH(221f) && NextPostDistanceM(0) < 5f && PreviousLineSpeed <= MpS.FromKpH(221f) && SpeedMpS() > 0f && !TVMArmed)
                 {
                     TVMArmed = true;
-                    UpdateTVMAspect(NextSignalAspect(0), false);
+                    PreviousSectionAspect = NextSignalAspect(0);
+                    PreviousSectionSpeed = Convert.ToInt32(MpS.ToKpH(NextSignalSpeedLimitMpS(0)));
                 }
 
                 // Automatic dearming
@@ -1200,48 +1794,391 @@ namespace ORTS.Scripting.Script
                 {
                     TVMArmed = false;
                     TVMCOVITEmergencyBraking = false;
+                    TVM430AspectChangeTimer.Stop();
                 }
 
                 if (TVMArmed)
                 {
-                    // TVM mask
-                    SetCabDisplayControl(TVM_Mask, 1);
+                    CalculateTvmSequence();
+                    DetermineTvmAspect();
+                    UpdateTvmCovit();
+                    UpdateTvmDisplay();
+                    UpdateTvmSounds();
 
-                    if (TVM300Present)
-                    {
-                        UpdateTVM300Display();
-                        UpdateTVM300COVIT();
-                    }
-                    else if (TVM430Present)
-                    {
-                        UpdateTVM430Display();
-                        UpdateTVM430COVIT();
-                    }
+                    TVMAspectPreviousCycle = TVMAspectCurrent;
+                    TVMBlinkingPreviousCycle = TVMBlinkingCurrent;
                 }
                 else
                 {
-                    // TVM mask
-                    SetCabDisplayControl(TVM_Mask, 0);
+                    TVMCOVITEmergencyBraking = false;
 
-                    TVMAspect = Aspect.None;
-                    TVMPreviousAspect = Aspect.None;
+                    TVMAspectCommand = TVMAspectType.None;
+                    TVMAspectCurrent = TVMAspectType.None;
+                    TVMAspectPreviousCycle = TVMAspectType.None;
+                    TVMBlinkingCommand = false;
+                    TVMBlinkingCurrent = false;
+                    TVMBlinkingPreviousCycle = false;
+
+                    TVMStartControlSpeedMpS = 0f;
+                    TVMEndControlSpeedMpS = 0f;
+                    TVMDecelerationMpS2 = 0f;
+
+                    UpdateTvmDisplay();
                 }
+            }
+        }
+
+        protected void CalculateTvmSequence()
+        {
+            int i;
+
+            if (NormalSignalPassed)
+            {
+                PreviousSectionSpeed = SpeedSequence[0];
+                PreviousSectionAspect = AspectSequence[0];
+                PreviousVcond = Vcond[0];
+            }
+
+            int ignoreCount = 0;
+
+            // Get the 10 next signals (from 10th to 1st in order to be optimal)
+            for (i = TVMNumberOfBlockSections - 1; i >= 0; i--)
+            {
+                SpeedSequence[i] = Convert.ToInt32(MpS.ToKpH(NextSignalSpeedLimitMpS(i)));
+                AspectSequence[i] = NextSignalAspect(i);
+
+                if (SpeedSequence[i] <= 0f && AspectSequence[i] > Aspect.Stop)
+                {
+                    // Ignore
+                    ignoreCount++;
+                    i++;
+                }
+            }
+
+            // Calculate execution speeds (Vcond)
+            for (i = TVMNumberOfBlockSections - 1; i >= 0; i--)
+            {
+                Aspect currentAspect;
+                int currentSpeed;
+
+                if (i == 0)
+                {
+                    currentAspect = PreviousSectionAspect;
+                    currentSpeed = PreviousSectionSpeed;
+                }
+                else
+                {
+                    currentAspect = AspectSequence[i - 1];
+                    currentSpeed = SpeedSequence[i - 1];
+                }
+
+                Aspect nextAspect = AspectSequence[i];
+                int nextSpeed = SpeedSequence[i];
+
+                if (currentAspect == Aspect.Stop || (currentAspect == Aspect.StopAndProceed && TVMModel > TVMModelType.TVM300))
+                {
+                    Vcond[i] = TVMSpeedType._RRR;
+                }
+                else if (nextSpeed == 30 && currentSpeed == 30)
+                {
+                    Vcond[i] = TVMSpeedType._RRR;
+                }
+                else if (nextSpeed == 60 && currentSpeed == 60 && TVMModel > TVMModelType.TVM300)
+                {
+                    Vcond[i] = TVMSpeedType._60E;
+                }
+                else if (nextAspect == Aspect.Stop && (TVMModel > TVMModelType.TVM300 || currentSpeed == 80))
+                {
+                    Vcond[i] = TVMSpeedType._80E;
+                }
+                else if (nextSpeed == 80 && currentSpeed == 80)
+                {
+                    Vcond[i] = TVMSpeedType._80E;
+                }
+                else if (nextSpeed == 130 && currentSpeed == 130 && TVMModel > TVMModelType.TVM300)
+                {
+                    Vcond[i] = TVMSpeedType._130E;
+                }
+                else if (nextSpeed == 130 && currentSpeed == 170) // 130 kph HSL exit
+                {
+                    Vcond[i] = TVMSpeedType._130E;
+                }
+                else if (nextSpeed == 160 && currentSpeed == 160)
+                {
+                    Vcond[i] = TVMSpeedType._160E;
+                }
+                else if (nextSpeed == 160 && currentSpeed == 170) // 160 kph HSL exit
+                {
+                    Vcond[i] = TVMSpeedType._160E;
+                }
+                else if (TVMModel == TVMModelType.TVM300 && nextAspect == Aspect.StopAndProceed) // MSTS TVM300 160E
+                {
+                    Vcond[i] = TVMSpeedType._160E;
+                }
+                else if (nextSpeed == 170 && currentSpeed == 170f && TVMModel > TVMModelType.TVM300)
+                {
+                    Vcond[i] = TVMSpeedType._170E;
+                }
+                else if (nextSpeed == 200 && currentSpeed == 200 && TVMModel > TVMModelType.TVM300)
+                {
+                    Vcond[i] = TVMSpeedType._200V;
+                }
+                else if (nextSpeed == 220 && currentSpeed == 220)
+                {
+                    // TODO : 220V not available currently
+                    Vcond[i] = TVMSpeedType._220E;
+                }
+                else if (nextSpeed == 220 && currentSpeed == 230) // 220 kph HSL exit
+                {
+                    // TODO : 220V not available currently
+                    Vcond[i] = TVMSpeedType._220E;
+                }
+                else if (TVMModel == TVMModelType.TVM300 && nextAspect == Aspect.Approach_1) // MSTS TVM300 220E
+                {
+                    Vcond[i] = TVMSpeedType._220E;
+                }
+                else if (nextSpeed == 230 && currentSpeed == 230 && TVMModel > TVMModelType.TVM300)
+                {
+                    // TODO : 230V not available currently
+                    Vcond[i] = TVMSpeedType._230E;
+                }
+                else if (nextSpeed == 270 && currentSpeed == 270)
+                {
+                    Vcond[i] = TVMSpeedType._270V;
+                }
+                else if (nextSpeed == 300 && currentSpeed == 300 || TVMModel == TVMModelType.TVM300)
+                {
+                    Vcond[i] = TVMSpeedType._300V;
+                }
+                else
+                {
+                    Vcond[i] = TVMSpeedType._320V;
+                }
+            }
+
+            for (i = 0; i < TVMNumberOfBlockSections - 1; i++)
+            {
+                TVMSpeedType previousVcond;
+
+                if (i == 0)
+                {
+                    previousVcond = PreviousVcond;
+                }
+                else
+                {
+                    previousVcond = Vcond[i - 1];
+                }
+
+                TVMSpeedType currentVcond = Vcond[i];
+                TVMSpeedType nextVcond = Vcond[i + 1];
+
+                if (currentVcond == TVMSpeedType._300V && TVMModel == TVMModelType.TVM300 || currentVcond == TVMSpeedType._320V)
+                {
+                    if (previousVcond == TVMSpeedType._230E || previousVcond == TVMSpeedType._270V)
+                    {
+                        if (nextVcond == TVMSpeedType._270V)
+                        {
+                            Vcond[i] = TVMSpeedType._270V;
+                        }
+                        else if (nextVcond == TVMSpeedType._300V)
+                        {
+                            Vcond[i] = TVMSpeedType._300V;
+                        }
+                    }
+                }
+            }
+
+            Dictionary<TVMSpeedType, TVMSpeedType> TAB1 = TVMModel == TVMModelType.TVM300 ? TVM300Tab1 : TVM430SncfTab1;
+            Dictionary<TVMSpeedType, TVMSpeedType> TAB2 = TVMModel == TVMModelType.TVM300 ? TVM300Tab2 : TVM430SncfTab2;
+
+            // Calculate Vc, Ve, Va
+
+            // Initialize last block section
+            i = TVMNumberOfBlockSections - 1;
+            Vc[i] = Vcond[i];
+            Ve[i] = Min(TAB2[Vcond[i]], TAB1[Vc[i]]);
+            Va[i] = TAB2[Vcond[i]];
+
+            // Calculate the sequence
+            for (i = TVMNumberOfBlockSections - 1; i > 0; i--)
+            {
+                Vc[i-1] = Min(Vcond[i-1], Ve[i]);
+                Ve[i-1] = Min(TAB2[Vcond[i-1]], TAB1[Vc[i-1]]);
+                Va[i-1] = TAB2[Vc[i]];
+            }
+        }
+
+        protected void DetermineTvmAspect()
+        {
+            switch (TVMModel)
+            {
+                case TVMModelType.TVM300:
+                    DetermineTvm300Aspect();
+                    break;
+
+                case TVMModelType.TVM430_V300:
+                case TVMModelType.TVM430_V320:
+                    DetermineTvm430Aspect();
+                    break;
+            }
+        }
+
+        protected void DetermineTvm300Aspect()
+        {
+            Tuple<TVMAspectType, bool, float> onBoardValues;
+
+            Tuple<TVMSpeedType, TVMSpeedType, TVMSpeedType> triplet = new Tuple<TVMSpeedType, TVMSpeedType, TVMSpeedType>(Ve[0], Vc[0], Va[0]);
+
+            if (TVM300DecodingTable.ContainsKey(triplet))
+            {
+                onBoardValues = TVM300DecodingTable[triplet];
             }
             else
             {
-                TVMArmed = false;
-                TVMCOVITEmergencyBraking = false;
+                triplet = new Tuple<TVMSpeedType, TVMSpeedType, TVMSpeedType>(Ve[0], Vc[0], TVMSpeedType.Any);
+
+                if (TVM300DecodingTable.ContainsKey(triplet))
+                {
+                    onBoardValues = TVM300DecodingTable[triplet];
+                }
+                else
+                {
+                    onBoardValues = new Tuple<TVMAspectType, bool, float>(TVMAspectType._RRR, false, 35f);
+                }
+            }
+
+            TVMAspectCommand = onBoardValues.Item1;
+            TVMBlinkingCommand = onBoardValues.Item2;
+            TVMStartControlSpeedMpS = TVMEndControlSpeedMpS = MpS.FromKpH(onBoardValues.Item3);
+            TVMDecelerationMpS2 = 0f;
+        }
+
+        protected void DetermineTvm430Aspect()
+        {
+            Tuple<TVMAspectType, bool, float, float, float> onBoardValues;
+
+            Tuple<TVMSpeedType, TVMSpeedType, TVMSpeedType> triplet = new Tuple<TVMSpeedType, TVMSpeedType, TVMSpeedType>(Ve[0], Vc[0], Va[0]);
+
+            if (TVM430DecodingTable.ContainsKey(triplet))
+            {
+                onBoardValues = TVM430DecodingTable[triplet];
+            }
+            else
+            {
+                triplet = new Tuple<TVMSpeedType, TVMSpeedType, TVMSpeedType>(Ve[0], Vc[0], TVMSpeedType.Any);
+
+                if (TVM430DecodingTable.ContainsKey(triplet))
+                {
+                    onBoardValues = TVM430DecodingTable[triplet];
+                }
+                else
+                {
+                    onBoardValues = new Tuple<TVMAspectType, bool, float, float, float>(TVMAspectType._RRR, false, 35f, 35f, 0f);
+                }
+            }
+            
+            if ((TVMAspectCommand != onBoardValues.Item1 || TVMBlinkingCommand != onBoardValues.Item2) && !TVM430AspectChangeTimer.Started)
+            {
+                TVMAspectCommand = onBoardValues.Item1;
+                TVMBlinkingCommand = onBoardValues.Item2;
+                TVMStartControlSpeedMpS = MpS.FromKpH(onBoardValues.Item3);
+                TVMEndControlSpeedMpS = MpS.FromKpH(onBoardValues.Item4);
+                TVMDecelerationMpS2 = onBoardValues.Item5;
             }
         }
 
-        protected void UpdateTVM300Display()
+        protected void UpdateTvmCovit()
         {
-            UpdateTVMAspect(NextSignalAspect(0));
+            switch (TVMModel)
+            {
+                case TVMModelType.TVM300:
+                    UpdateTvm300Covit();
+                    break;
+
+                case TVMModelType.TVM430_V300:
+                case TVMModelType.TVM430_V320:
+                    UpdateTvm430Covit();
+                    break;
+            }
         }
 
-        protected void UpdateTVM430Display()
+        protected void UpdateTvm300Covit()
         {
-            if (NextSignalAspect(0) != TVMAspect)
+            if (TVMCOVITInhibited)
+            {
+                TVMCOVITEmergencyBraking = false;
+            }
+            else
+            {
+                SetCurrentSpeedLimitMpS(TVMStartControlSpeedMpS);
+                SetNextSpeedLimitMpS(TVMEndControlSpeedMpS);
+
+                TVMCOVITEmergencyBraking = SpeedMpS() > TVMStartControlSpeedMpS;
+            }
+        }
+
+        protected void UpdateTvm430Covit()
+        {
+            if (TVMCOVITInhibited)
+            {
+                TVMCOVITEmergencyBraking = false;
+            }
+            else
+            {
+                SetCurrentSpeedLimitMpS(TVMStartControlSpeedMpS);
+                SetNextSpeedLimitMpS(TVMEndControlSpeedMpS);
+
+                float SpeedCurveMpS = Math.Min(
+                    SpeedCurve(
+                        NextSignalDistanceM(0),
+                        TVMEndControlSpeedMpS,
+                        0,
+                        0,
+                        TVMDecelerationMpS2
+                    ),
+                    TVMStartControlSpeedMpS
+                );
+
+                TVMCOVITEmergencyBraking = SpeedMpS() > SpeedCurveMpS;
+            }
+        }
+
+        protected void UpdateTvmDisplay()
+        {
+            switch (TVMModel)
+            {
+                case TVMModelType.TVM300:
+                    UpdateTvm300Display();
+                    break;
+
+                case TVMModelType.TVM430_V300:
+                case TVMModelType.TVM430_V320:
+                    UpdateTvm430Display();
+                    break;
+            }
+        }
+
+        protected void UpdateTvm300Display()
+        {
+            UpdateTvmCabSignal(TVMAspectCommand, TVMBlinkingCommand, TVMAspectCommand != TVMAspectPreviousCycle);
+
+            SetCabDisplayControl(TVM_Mask, TVMAspectCommand == TVMAspectType.None ? 0 : 1);
+
+            SetCabDisplayControl(VY_CV, TVMCOVITEmergencyBraking || KarmEmergencyBraking ? 1 : 0);
+            SetCabDisplayControl(VY_SECT, TVMOpenCircuitBreaker ? 1 : 0);
+            SetCabDisplayControl(VY_SECT_AU, 0);
+            SetCabDisplayControl(VY_BPT, TVMLowerPantograph ? 1 : 0);
+
+            // Legacy
+            Aspect aspect = TVM300MstsTranslation[TVMAspectCommand];
+            SetNextSignalAspect(aspect);
+        }
+
+        protected void UpdateTvm430Display()
+        {
+            UpdateTvmCabSignal(TVMAspectCurrent, TVMBlinkingCurrent, false);
+
+            if (TVMAspectCommand != TVMAspectCurrent || TVMBlinkingCommand != TVMBlinkingCurrent)
             {
                 if (!TVM430AspectChangeTimer.Started)
                 {
@@ -1251,147 +2188,311 @@ namespace ORTS.Scripting.Script
                 {
                     if (TVM430AspectChangeTimer.Triggered)
                     {
-                        UpdateTVMAspect(NextSignalAspect(0));
+                        UpdateTvmCabSignal(TVMAspectCommand, TVMBlinkingCommand, TVMAspectCommand != TVMAspectCurrent);
 
                         TVM430AspectChangeTimer.Stop();
                     }
                 }
             }
+
+            SetCabDisplayControl(TVM_Mask, TVMAspectCommand == TVMAspectType.None ? 0 : 1);
+
+            SetCabDisplayControl(VY_CV, TVMCOVITEmergencyBraking || KarmEmergencyBraking ? 1 : 0);
+            SetCabDisplayControl(VY_SECT, TVMOpenCircuitBreaker ? 1 : 0);
+            SetCabDisplayControl(VY_SECT_AU, TVMOpenCircuitBreakerAutomatic ? 1 : 0);
+            SetCabDisplayControl(VY_BPT, TVMLowerPantograph ? 1 : 0);
+
+            // Legacy
+            Aspect aspect;
+            if (TVM430TrainSpeedLimitMpS <= MpS.FromKpH(300f))
+            {
+                aspect = TVM430S300MstsTranslation[TVMAspectCommand];
+            }
             else
             {
-                UpdateTVMAspect(NextSignalAspect(0));
+                aspect = TVM430S320MstsTranslation[TVMAspectCommand];
             }
-        }
-
-        protected void UpdateTVMAspect(Aspect aspect, bool updateRSO = true)
-        {
-            TVMPreviousAspect = TVMAspect;
-            TVMAspect = aspect;
             SetNextSignalAspect(aspect);
-
-            if (updateRSO && TVMAspect != Aspect.None && TVMPreviousAspect != Aspect.None)
-            {
-                TVMClosedSignal = (TVMPreviousAspect < TVMAspect);
-                TVMOpenedSignal = (TVMPreviousAspect > TVMAspect);
-            }
         }
 
-        protected void UpdateTVM300COVIT()
+        protected void UpdateTvmCabSignal(TVMAspectType aspect, bool blinking, bool resetBlinking)
         {
-            if (TVMCOVITInhibited)
+            TVMAspectCurrent = aspect;
+            TVMBlinkingCurrent = blinking;
+
+            bool on = true;
+
+            if (blinking)
             {
-                TVMCOVITEmergencyBraking = false;
-            }
-            else
-            {
-                TVM300CurrentSpeedLimitMpS = MpS.FromKpH(TVM300CurrentSpeedLimitsKph[NextSignalAspect(0)]);
-                TVM300NextSpeedLimitMpS = MpS.FromKpH(TVM300NextSpeedLimitsKph[NextSignalAspect(0)]);
-
-                SetNextSpeedLimitMpS(TVM300NextSpeedLimitMpS);
-                SetCurrentSpeedLimitMpS(TVM300CurrentSpeedLimitMpS);
-
-                TVM300EmergencySpeedMpS = TVM300GetEmergencySpeed(TVM300CurrentSpeedLimitMpS);
-
-                if (!TVMCOVITEmergencyBraking && SpeedMpS() > TVM300CurrentSpeedLimitMpS + TVM300EmergencySpeedMpS)
-                    TVMCOVITEmergencyBraking = true;
-
-                if (TVMCOVITEmergencyBraking && SpeedMpS() <= TVM300CurrentSpeedLimitMpS)
-                    TVMCOVITEmergencyBraking = false;
-            }
-        }
-
-        protected void UpdateTVM430COVIT()
-        {
-            if (TVMCOVITInhibited)
-            {
-                TVMCOVITEmergencyBraking = false;
-            }
-            else
-            {
-                if (TVM430TrainSpeedLimitMpS == MpS.FromKpH(320f))
+                if (!TVMBlinker.Started)
                 {
-                    TVM430CurrentSpeedLimitMpS = MpS.FromKpH(TVM430S320CurrentSpeedLimitsKph[NextSignalAspect(0)]);
-                    TVM430NextSpeedLimitMpS = MpS.FromKpH(TVM430S320NextSpeedLimitsKph[NextSignalAspect(0)]);
-                }
-                else
-                {
-                    TVM430CurrentSpeedLimitMpS = MpS.FromKpH(TVM430S300CurrentSpeedLimitsKph[NextSignalAspect(0)]);
-                    TVM430NextSpeedLimitMpS = MpS.FromKpH(TVM430S300NextSpeedLimitsKph[NextSignalAspect(0)]);
+                    TVMBlinker.Start();
                 }
 
-                SetNextSpeedLimitMpS(TVM430NextSpeedLimitMpS);
-                SetCurrentSpeedLimitMpS(TVM430CurrentSpeedLimitMpS);
-
-                TVM430CurrentEmergencySpeedMpS = TVM430GetEmergencySpeed(TVM430CurrentSpeedLimitMpS);
-                TVM430NextEmergencySpeedMpS = TVM430GetEmergencySpeed(TVM430NextSpeedLimitMpS);
-
-                if (NormalSignalPassed)
+                if (resetBlinking)
                 {
-                    TVM430EmergencyDecelerationMpS2 = Deceleration(
-                        TVM430CurrentSpeedLimitMpS + TVM430CurrentEmergencySpeedMpS,
-                        TVM430NextSpeedLimitMpS + TVM430NextEmergencySpeedMpS,
-                        NextSignalDistanceM(0)
-                    );
-
-                    TVM430ResetDecelerationMpS2 = Deceleration(
-                        TVM430CurrentSpeedLimitMpS,
-                        TVM430NextSpeedLimitMpS,
-                        NextSignalDistanceM(0)
-                    );
+                    TVMBlinker.Stop();
+                    TVMBlinker.Start();
                 }
 
-                TVM430EmergencySpeedCurveMpS = SpeedCurve(
-                    NextSignalDistanceM(0),
-                    TVM430NextSpeedLimitMpS + TVM430NextEmergencySpeedMpS,
-                    0,
-                    0,
-                    TVM430EmergencyDecelerationMpS2
-                );
+                on = TVMBlinker.On;
+            }
+            else
+            {
+                TVMBlinker.Stop();
+            }
 
-                TVM430ResetSpeedCurveMpS = SpeedCurve(
-                    NextSignalDistanceM(0),
-                    TVM430NextSpeedLimitMpS,
-                    0,
-                    0,
-                    TVM430ResetDecelerationMpS2
-                );
+            switch (aspect)
+            {
+                case TVMAspectType.None:
+                    SetCabDisplayControl(TVM_VL, 0);
+                    SetCabDisplayControl(TVM_Ex1, 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, 0);
+                    SetCabDisplayControl(TVM_An2, 0);
+                    break;
 
-                if (!TVMCOVITEmergencyBraking && SpeedMpS() > TVM430EmergencySpeedCurveMpS)
-                    TVMCOVITEmergencyBraking = true;
+                case TVMAspectType._RRR:
+                    SetCabDisplayControl(TVM_VL, 0);
+                    SetCabDisplayControl(TVM_Ex1, 1);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, 0);
+                    SetCabDisplayControl(TVM_An2, 0);
+                    break;
 
-                if (TVMCOVITEmergencyBraking && SpeedMpS() <= TVM430ResetSpeedCurveMpS)
-                    TVMCOVITEmergencyBraking = false;
+                case TVMAspectType._000:
+                    SetCabDisplayControl(TVM_VL, 0);
+                    SetCabDisplayControl(TVM_Ex1, 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, 1);
+                    SetCabDisplayControl(TVM_An2, 0);
+                    break;
+
+                case TVMAspectType._30E:
+                    SetCabDisplayControl(TVM_VL, 0);
+                    SetCabDisplayControl(TVM_Ex1, on ? 2 : 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, 0);
+                    SetCabDisplayControl(TVM_An2, 0);
+                    break;
+
+                case TVMAspectType._30A:
+                    SetCabDisplayControl(TVM_VL, 0);
+                    SetCabDisplayControl(TVM_Ex1, 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, on ? 2 : 0);
+                    SetCabDisplayControl(TVM_An2, 0);
+                    break;
+
+                case TVMAspectType._60E:
+                    SetCabDisplayControl(TVM_VL, 0);
+                    SetCabDisplayControl(TVM_Ex1, on ? 3 : 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, 0);
+                    SetCabDisplayControl(TVM_An2, 0);
+                    break;
+
+                case TVMAspectType._60A:
+                    SetCabDisplayControl(TVM_VL, 0);
+                    SetCabDisplayControl(TVM_Ex1, 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, on ? 3 : 0);
+                    SetCabDisplayControl(TVM_An2, 0);
+                    break;
+
+                case TVMAspectType._80E:
+                    SetCabDisplayControl(TVM_VL, 0);
+                    SetCabDisplayControl(TVM_Ex1, on ? 4 : 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, 0);
+                    SetCabDisplayControl(TVM_An2, 0);
+                    break;
+
+                case TVMAspectType._80A:
+                    SetCabDisplayControl(TVM_VL, 0);
+                    SetCabDisplayControl(TVM_Ex1, 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, on ? 4 : 0);
+                    SetCabDisplayControl(TVM_An2, 0);
+                    break;
+
+                case TVMAspectType._100E:
+                    SetCabDisplayControl(TVM_VL, 0);
+                    SetCabDisplayControl(TVM_Ex1, on ? 5 : 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, 0);
+                    SetCabDisplayControl(TVM_An2, 0);
+                    break;
+
+                case TVMAspectType._100A:
+                    SetCabDisplayControl(TVM_VL, 0);
+                    SetCabDisplayControl(TVM_Ex1, 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, on ? 5 : 0);
+                    SetCabDisplayControl(TVM_An2, 0);
+                    break;
+
+                case TVMAspectType._130E:
+                    SetCabDisplayControl(TVM_VL, 0);
+                    SetCabDisplayControl(TVM_Ex1, on ? 6 : 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, 0);
+                    SetCabDisplayControl(TVM_An2, 0);
+                    break;
+
+                case TVMAspectType._130A:
+                    SetCabDisplayControl(TVM_VL, 0);
+                    SetCabDisplayControl(TVM_Ex1, 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, on ? 6 : 0);
+                    SetCabDisplayControl(TVM_An2, 0);
+                    break;
+
+                case TVMAspectType._160E:
+                    SetCabDisplayControl(TVM_VL, 0);
+                    SetCabDisplayControl(TVM_Ex1, on ? 7 : 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, 0);
+                    SetCabDisplayControl(TVM_An2, 0);
+                    break;
+
+                case TVMAspectType._160A:
+                    SetCabDisplayControl(TVM_VL, 0);
+                    SetCabDisplayControl(TVM_Ex1, 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, on ? 7 : 0);
+                    SetCabDisplayControl(TVM_An2, 0);
+                    break;
+
+                case TVMAspectType._170E:
+                    SetCabDisplayControl(TVM_VL, 0);
+                    SetCabDisplayControl(TVM_Ex1, 0);
+                    SetCabDisplayControl(TVM_Ex2, on ? 1 : 0);
+                    SetCabDisplayControl(TVM_An1, 0);
+                    SetCabDisplayControl(TVM_An2, 0);
+                    break;
+
+                case TVMAspectType._170A:
+                    SetCabDisplayControl(TVM_VL, 0);
+                    SetCabDisplayControl(TVM_Ex1, 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, 0);
+                    SetCabDisplayControl(TVM_An2, on ? 1 : 0);
+                    break;
+
+                case TVMAspectType._200V:
+                    SetCabDisplayControl(TVM_VL, on ? 2 : 0);
+                    SetCabDisplayControl(TVM_Ex1, 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, 0);
+                    SetCabDisplayControl(TVM_An2, 0);
+                    break;
+
+                case TVMAspectType._200A:
+                    SetCabDisplayControl(TVM_VL, 0);
+                    SetCabDisplayControl(TVM_Ex1, 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, 0);
+                    SetCabDisplayControl(TVM_An2, on ? 2 : 0);
+                    break;
+
+                case TVMAspectType._220E:
+                    SetCabDisplayControl(TVM_VL, 0);
+                    SetCabDisplayControl(TVM_Ex1, 0);
+                    SetCabDisplayControl(TVM_Ex2, on ? 3 : 0);
+                    SetCabDisplayControl(TVM_An1, 0);
+                    SetCabDisplayControl(TVM_An2, 0);
+                    break;
+
+                case TVMAspectType._220V:
+                    SetCabDisplayControl(TVM_VL, on ? 3 : 0);
+                    SetCabDisplayControl(TVM_Ex1, 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, 0);
+                    SetCabDisplayControl(TVM_An2, 0);
+                    break;
+
+                case TVMAspectType._220A:
+                    SetCabDisplayControl(TVM_VL, 0);
+                    SetCabDisplayControl(TVM_Ex1, 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, 0);
+                    SetCabDisplayControl(TVM_An2, on ? 3 : 0);
+                    break;
+
+                case TVMAspectType._230E:
+                    SetCabDisplayControl(TVM_VL, 0);
+                    SetCabDisplayControl(TVM_Ex1, 0);
+                    SetCabDisplayControl(TVM_Ex2, on ? 4 : 0);
+                    SetCabDisplayControl(TVM_An1, 0);
+                    SetCabDisplayControl(TVM_An2, 0);
+                    break;
+
+                case TVMAspectType._230V:
+                    SetCabDisplayControl(TVM_VL, on ? 4 : 0);
+                    SetCabDisplayControl(TVM_Ex1, 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, 0);
+                    SetCabDisplayControl(TVM_An2, 0);
+                    break;
+
+                case TVMAspectType._230A:
+                    SetCabDisplayControl(TVM_VL, 0);
+                    SetCabDisplayControl(TVM_Ex1, 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, 0);
+                    SetCabDisplayControl(TVM_An2, on ? 4 : 0);
+                    break;
+
+                case TVMAspectType._270V:
+                    SetCabDisplayControl(TVM_VL, on ? 5 : 0);
+                    SetCabDisplayControl(TVM_Ex1, 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, 0);
+                    SetCabDisplayControl(TVM_An2, 0);
+                    break;
+
+                case TVMAspectType._270A:
+                    SetCabDisplayControl(TVM_VL, 0);
+                    SetCabDisplayControl(TVM_Ex1, 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, 0);
+                    SetCabDisplayControl(TVM_An2, on ? 5 : 0);
+                    break;
+
+                case TVMAspectType._300V:
+                    SetCabDisplayControl(TVM_VL, on ? 6 : 0);
+                    SetCabDisplayControl(TVM_Ex1, 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, 0);
+                    SetCabDisplayControl(TVM_An2, 0);
+                    break;
+
+                case TVMAspectType._300A:
+                    SetCabDisplayControl(TVM_VL, 0);
+                    SetCabDisplayControl(TVM_Ex1, 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, 0);
+                    SetCabDisplayControl(TVM_An2, on ? 6 : 0);
+                    break;
+
+                case TVMAspectType._320V:
+                    SetCabDisplayControl(TVM_VL, on ? 7 : 0);
+                    SetCabDisplayControl(TVM_Ex1, 0);
+                    SetCabDisplayControl(TVM_Ex2, 0);
+                    SetCabDisplayControl(TVM_An1, 0);
+                    SetCabDisplayControl(TVM_An2, 0);
+                    break;
             }
         }
 
-        private float TVM300GetEmergencySpeed(float speedLimit)
+        protected void UpdateTvmSounds()
         {
-            float emergencySpeed = 0f;
-
-            if (speedLimit <= MpS.FromKpH(80f))
-                emergencySpeed = MpS.FromKpH(5f);
-            else if (speedLimit <= MpS.FromKpH(160f))
-                emergencySpeed = MpS.FromKpH(10f);
-            else
-                emergencySpeed = MpS.FromKpH(15f);
-
-            return emergencySpeed;
-        }
-
-        private float TVM430GetEmergencySpeed(float speedLimit)
-        {
-            float emergencySpeed = 0f;
-
-            if (speedLimit <= MpS.FromKpH(80f))
-                emergencySpeed = MpS.FromKpH(5f);
-            else if (speedLimit <= MpS.FromKpH(170f))
-                emergencySpeed = MpS.FromKpH(10f);
-            else if (speedLimit <= MpS.FromKpH(270f))
-                emergencySpeed = MpS.FromKpH(15f);
-            else
-                emergencySpeed = MpS.FromKpH(20f);
-
-            return emergencySpeed;
+            if (TVMAspectCurrent != TVMAspectType.None && TVMAspectPreviousCycle != TVMAspectType.None)
+            {
+                TVMClosedSignal = (TVMAspectPreviousCycle > TVMAspectCurrent) || (TVMBlinkingCurrent && !TVMBlinkingPreviousCycle);
+                TVMOpenedSignal = (TVMAspectPreviousCycle < TVMAspectCurrent) || (!TVMBlinkingCurrent && TVMBlinkingPreviousCycle);
+            }
         }
 
         public override void HandleEvent(TCSEvent evt, string message)
@@ -1461,11 +2562,7 @@ namespace ORTS.Scripting.Script
                                 // BP AM V1 and BP AM V2
                                 case BP_AM_V1:
                                 case BP_AM_V2:
-                                    if (!TVMArmed)
-                                    {
-                                        TVMArmed = true;
-                                        UpdateTVMAspect(NextSignalAspect(0), false);
-                                    }
+                                    TVMArmed = true;
                                     break;
 
                                 // BP DM
